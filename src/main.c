@@ -16,7 +16,7 @@ static uint8_t firmwareDescription[AM_FIRMWARE_DESCRIPTION_LENGTH] = "Example-Fi
 
 /* Required time zone handler */
 
-void AudioMoth_timezoneRequested(int8_t *timezoneHours, int8_t *timezoneMinutes) { }
+void AudioMoth_timezoneRequested(int32_t *timezoneHours, int32_t *timezoneMinutes) { }
 
 /* Required interrupt handles */
 
@@ -40,6 +40,7 @@ void AudioMoth_usbFirmwareDescriptionRequested(uint8_t **firmwareDescriptionPtr)
 }
 
 void AudioMoth_usbApplicationPacketRequested(uint32_t messageType, uint8_t *transmitBuffer, uint32_t size) { }
+
 void AudioMoth_usbApplicationPacketReceived(uint32_t messageType, uint8_t *receiveBuffer, uint8_t *transmitBuffer, uint32_t size) { }
 
 /* Main function */
