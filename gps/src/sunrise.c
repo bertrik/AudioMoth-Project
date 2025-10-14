@@ -119,21 +119,41 @@ void Sunrise_calculateFromUnix(SR_event_t event, uint32_t currentTime, float lat
 
     /* Calculate fractional part of year */
 
+    struct tm time;
+
     const time_t rawTime = currentTime;
 
-    struct tm *time = gmtime(&rawTime);
+    gmtime_r(&rawTime, &time);
 
-    uint32_t year = YEAR_OFFSET + time->tm_year;
+    uint32_t year = YEAR_OFFSET + time.tm_year;
 
     float totalDaysInYear = isLeapYear(year) ? DAYS_IN_LEAP_YEAR : DAYS_IN_YEAR;
 
-    float dayOfYear = (float)time->tm_yday + (time->tm_hour + time->tm_min / MINUTES_IN_HOUR + time->tm_sec / SECONDS_IN_HOUR - HOURS_TO_MIDDAY) / HOURS_IN_DAY;
+    float totalDaysInPreviousYear = isLeapYear(year - 1) ? DAYS_IN_LEAP_YEAR : DAYS_IN_YEAR;
 
-    if (dayOfYear < 0) dayOfYear += totalDaysInYear;
+    float totalDaysInNextYear = isLeapYear(year + 1) ? DAYS_IN_LEAP_YEAR : DAYS_IN_YEAR;
 
-    if (dayOfYear >= totalDaysInYear) dayOfYear -= totalDaysInYear;
+    float dayOfYear = (float)time.tm_yday + (time.tm_hour + time.tm_min / MINUTES_IN_HOUR + time.tm_sec / SECONDS_IN_HOUR - HOURS_TO_MIDDAY) / HOURS_IN_DAY;
 
-    float gamma = 2.0f * M_PI * dayOfYear / totalDaysInYear;
+    float gamma;
+
+    if (dayOfYear < 0) {
+        
+        dayOfYear += totalDaysInPreviousYear;
+
+        gamma = 2.0f * M_PI * dayOfYear / totalDaysInPreviousYear;
+
+    } else if (dayOfYear >= totalDaysInYear) {
+        
+        dayOfYear -= totalDaysInYear;
+
+        gamma = 2.0f * M_PI * dayOfYear / totalDaysInNextYear;
+
+    } else {
+
+        gamma = 2.0f * M_PI * dayOfYear / totalDaysInYear;
+
+    }
 
     /* Calculate sunrise and sunset */
 
