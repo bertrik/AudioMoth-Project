@@ -50,6 +50,7 @@
 
 #define MILLISECONDS_IN_SECOND                    1000
 #define SECONDS_IN_MINUTE                         60
+#define MINUTES_IN_HOUR                           60
 
 /* USB EM2 wake constant */
 
@@ -192,7 +193,7 @@ static volatile uint32_t usbLoopCounter;
 
 /* Delay timer variable */
 
-static volatile bool delayTimmerRunning;
+static volatile bool delayTimerRunning;
 
 /* USB bootloader variables */
 
@@ -207,6 +208,16 @@ static volatile bool completedCalculateCRC;
 static volatile bool enterSerialBootloader;
 
 static volatile bool shouldFlashFirmware;
+
+/* External microphone variable */
+
+static bool ignoreExternalMicrophone;
+
+/* LED variables */
+
+static bool enabledRedLED;
+
+static bool enabledGreenLED;
 
 /* Function prototypes */
 
@@ -550,7 +561,7 @@ void TIMER1_IRQHandler(void) {
 
     /* Handle the interrupt */
 
-    if (interruptMask & TIMER_IF_OF) delayTimmerRunning = false;
+    if (interruptMask & TIMER_IF_OF) delayTimerRunning = false;
 
 }
 
@@ -721,31 +732,55 @@ void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *sec
 
 }
 
+void AudioMoth_ignoreExternalMicrophone(bool state) {
+
+    ignoreExternalMicrophone = state;
+
+}
+
 bool AudioMoth_enableMicrophone(AM_gainRange_t gainRain, AM_gainSetting_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
+
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
 
     /* Check for external microphone */
 
     bool externalMicrophone = false;
 
-    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+    if (ignoreExternalMicrophone) {
 
-    if (hardwareVersion >= AM_VERSION_2 && hardwareVersion < AM_VERSION_4) {
+        if (hardwareVersion == AM_VERSION_2) {
 
-        GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeInput, 0);
+            GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeInput, 0);
 
-        GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, true);
+            GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, true);
 
-        externalMicrophone = GPIO_PinInGet(JCK_DETECT_GPIOPORT, JCK_DETECT) == 0;
+            externalMicrophone = GPIO_PinInGet(JCK_DETECT_GPIOPORT, JCK_DETECT) == 0;
 
-    }
+        }
 
-    if (hardwareVersion >= AM_VERSION_4) {
+    } else {
 
-        GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeInput, 0);
+        if (hardwareVersion >= AM_VERSION_2 && hardwareVersion < AM_VERSION_4) {
 
-        GPIO_IntConfig(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, true, true, true);
+            GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeInput, 0);
 
-        externalMicrophone = GPIO_PinInGet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT) == 0;
+            GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, true);
+
+            externalMicrophone = GPIO_PinInGet(JCK_DETECT_GPIOPORT, JCK_DETECT) == 0;
+
+        }
+
+        if (hardwareVersion >= AM_VERSION_4) {
+
+            GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeInput, 0);
+
+            GPIO_IntConfig(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, true, true, true);
+
+            externalMicrophone = GPIO_PinInGet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT) == 0;
+
+        }
 
     }
 
@@ -754,9 +789,13 @@ bool AudioMoth_enableMicrophone(AM_gainRange_t gainRain, AM_gainSetting_t gain, 
     if (externalMicrophone) {
 
         if (hardwareVersion < AM_VERSION_4) {
+
             GPIO_PinOutClear(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N);
+        
         } else {
+        
             GPIO_PinOutClear(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N);
+        
         }
 
     } else {
@@ -828,15 +867,15 @@ void AudioMoth_disableMicrophone(void) {
     /* Disable VREF power */
 
     if (hardwareVersion < AM_VERSION_4) GPIO_PinOutClear(VREF_GPIOPORT, VREF_ENABLE);
-	
+
     /* Disable OPA1 and OPA2 */
-	
+
     CMU_ClockEnable(cmuClock_DAC0, true);
 
     OPAMP_Disable(DAC0, OPA1);
 
     OPAMP_Disable(DAC0, OPA2);
-	
+    
     /* Stop the clocks */
 
     CMU_ClockEnable(cmuClock_DAC0, false);
@@ -1099,7 +1138,7 @@ void AudioMoth_delay(uint32_t milliseconds) {
 
     /* Start timer and wait until interrupt occurs */
 
-    delayTimmerRunning = true;
+    delayTimerRunning = true;
 
     uint32_t clockTicksToWait = ROUNDED_DIV((CMU_ClockFreqGet(cmuClock_HF) >> timerPrescale1024) * milliseconds, MILLISECONDS_IN_SECOND);
 
@@ -1109,7 +1148,7 @@ void AudioMoth_delay(uint32_t milliseconds) {
 
     TIMER_Enable(TIMER1, true);
 
-    while (delayTimmerRunning) {
+    while (delayTimerRunning) {
 
         EMU_EnterEM1();
 
@@ -2320,13 +2359,13 @@ AM_switchPosition_t AudioMoth_getSwitchPosition(void) {
 
     if (hardwareVersion < AM_VERSION_3) {
 
-        if (GPIO_PinInGet(SWITCH_2_GPIOPORT, SWITCH_2_SENSE) == 1)  return AM_SWITCH_USB;
+        if (GPIO_PinInGet(SWITCH_2_GPIOPORT, SWITCH_2_SENSE) == 1) return AM_SWITCH_USB;
 
         return AM_SWITCH_CUSTOM;
 
     } else {
 
-        if (GPIO_PinInGet(SWITCH_2_GPIOPORT, SWITCH_2_SENSE) == 1)  return AM_SWITCH_CUSTOM;
+        if (GPIO_PinInGet(SWITCH_2_GPIOPORT, SWITCH_2_SENSE) == 1) return AM_SWITCH_CUSTOM;
 
         return AM_SWITCH_USB;
 
@@ -2416,7 +2455,7 @@ static void setTime(uint32_t time, uint32_t milliseconds) {
 
 static void getTime(uint32_t *time, uint32_t *milliseconds) {
 
-    uint64_t offset =  (uint64_t)BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_HIGH) << 32;
+    uint64_t offset = (uint64_t)BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_HIGH) << 32;
 
     offset += (uint64_t)BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_LOW);
 
@@ -2612,27 +2651,26 @@ void AudioMoth_checkAndHandleTimeOverflow(void) {
 
 DWORD get_fattime(void) {
 
-    int8_t timezoneHours = 0;
-
-    int8_t timezoneMinutes = 0;
-
-    AudioMoth_timezoneRequested(&timezoneHours, &timezoneMinutes);
+    struct tm time;
 
     uint32_t currentTime;
 
     AudioMoth_getTime(&currentTime, NULL);
 
-    time_t fatTime = currentTime + timezoneHours * 60 * 60 + timezoneMinutes * 60;
+    int32_t timezoneHours, timezoneMinutes;
 
-    struct tm timePtr;
-    gmtime_r(&fatTime, &timePtr);
+    AudioMoth_timezoneRequested(&timezoneHours, &timezoneMinutes);
 
-    return (((unsigned int)timePtr.tm_year - 208) << 25) |
-            (((unsigned int)timePtr.tm_mon + 1 ) << 21) |
-            ((unsigned int)timePtr.tm_mday << 16) |
-            ((unsigned int)timePtr.tm_hour << 11) |
-            ((unsigned int)timePtr.tm_min << 5) |
-            ((unsigned int)timePtr.tm_sec >> 1);
+    time_t rawTime = currentTime + timezoneHours * MINUTES_IN_HOUR * SECONDS_IN_MINUTE + timezoneMinutes * SECONDS_IN_MINUTE;
+
+    gmtime_r(&rawTime, &time);
+
+    return (((unsigned int)time.tm_year - 208) << 25) |
+            (((unsigned int)time.tm_mon + 1 ) << 21) |
+            ((unsigned int)time.tm_mday << 16) |
+            ((unsigned int)time.tm_hour << 11) |
+            ((unsigned int)time.tm_min << 5) |
+            ((unsigned int)time.tm_sec >> 1);
 
 }
 
@@ -2640,20 +2678,50 @@ DWORD get_fattime(void) {
 
 void AudioMoth_setRedLED(bool state) {
 
-    GPIO_PinModeSet(LED_GPIOPORT, RED_LED, gpioModePushPull, state);
+    if (enabledRedLED) {
 
-}
+        if (state) {
 
-void AudioMoth_setBothLED(bool state) {
+            GPIO_PinOutSet(LED_GPIOPORT, RED_LED);
 
-    GPIO_PinModeSet(LED_GPIOPORT, RED_LED, gpioModePushPull, state);
-    GPIO_PinModeSet(LED_GPIOPORT, GREEN_LED, gpioModePushPull, state);
+        } else {
+
+            GPIO_PinOutClear(LED_GPIOPORT, RED_LED);
+        }
+
+    } else {
+
+        GPIO_PinModeSet(LED_GPIOPORT, RED_LED, gpioModePushPull, state);
+
+    }
 
 }
 
 void AudioMoth_setGreenLED(bool state) {
 
-    GPIO_PinModeSet(LED_GPIOPORT, GREEN_LED, gpioModePushPull, state);
+    if (enabledGreenLED) {
+
+        if (state) {
+
+            GPIO_PinOutSet(LED_GPIOPORT, GREEN_LED);
+
+        } else {
+
+            GPIO_PinOutClear(LED_GPIOPORT, GREEN_LED);
+        }
+
+    } else {
+
+        GPIO_PinModeSet(LED_GPIOPORT, GREEN_LED, gpioModePushPull, state);
+
+    }
+
+}
+
+void AudioMoth_setBothLED(bool state) {
+
+    AudioMoth_setRedLED(state);
+    AudioMoth_setGreenLED(state);
 
 }
 

@@ -56,7 +56,7 @@ typedef enum {AM_EXT_BAT_LOW, AM_EXT_BAT_2V5, AM_EXT_BAT_2V6, AM_EXT_BAT_2V7, AM
 
 /* Time zone handler */
 
-extern void AudioMoth_timezoneRequested(int8_t *timezoneHours, int8_t *timezoneMinutes);
+extern void AudioMoth_timezoneRequested(int32_t *timezoneHours, int32_t *timezoneMinutes);
 
 /* Interrupt handlers */
 
@@ -108,6 +108,7 @@ void AudioMoth_startMicrophoneSamples(uint32_t sampleRate);
 void AudioMoth_initialiseMicrophoneInterrupts(void);
 void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint16_t numberOfSamples);
 
+void AudioMoth_ignoreExternalMicrophone(bool state);
 bool AudioMoth_enableMicrophone(AM_gainRange_t gainRange, AM_gainSetting_t gainSetting, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 void AudioMoth_disableMicrophone(void);
 
