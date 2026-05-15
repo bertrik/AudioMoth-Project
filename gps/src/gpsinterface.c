@@ -127,9 +127,9 @@ void GPSInterface_disable(void) {
 
     /* Disable the pins */
 
-    GPIO_PinModeSet(UART_RX_GPIOPORT, UART_RX_PIN, gpioModeDisabled, 0);
+    GPIO_PinModeSet(UART_RX_GPIOPORT, UART_RX_PIN, gpioModeDisabled, false);
 
-    GPIO_PinModeSet(PPS_GPIOPORT, PPS_PIN, gpioModeDisabled, 0);
+    GPIO_PinModeSet(PPS_GPIOPORT, PPS_PIN, gpioModeDisabled, false);
 
 }
 
@@ -143,7 +143,7 @@ void GPSInterface_enable(uint32_t ticksPerSecond) {
 
     /* Enable the RX pin */
 
-    GPIO_PinModeSet(UART_RX_GPIOPORT, UART_RX_PIN, gpioModeInputPull, 1);
+    GPIO_PinModeSet(UART_RX_GPIOPORT, UART_RX_PIN, gpioModeInputPull, true);
 
     /* Enable UART clock */
 
@@ -177,7 +177,7 @@ void GPSInterface_enable(uint32_t ticksPerSecond) {
 
     /* Set up PPS pin and pull low */
 
-    GPIO_PinModeSet(PPS_GPIOPORT, PPS_PIN, gpioModeInputPull, 0);
+    GPIO_PinModeSet(PPS_GPIOPORT, PPS_PIN, gpioModeInputPull, false);
 
     /* Enable the ADC timer */
 
