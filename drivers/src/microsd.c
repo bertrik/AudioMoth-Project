@@ -178,6 +178,7 @@ void MICROSD_PowerOff(void)
   MICROSD_Deselect();
   /* Disable SPI clock */
   CMU_ClockEnable(MICROSD_CMUCLOCK, false);
+
 }
 
 /**************************************************************************//**
