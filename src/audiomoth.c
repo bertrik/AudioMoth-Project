@@ -45,9 +45,10 @@
 /* Time constants */
 
 #define AM_LFXO_LFRCO_TICKS_PER_SECOND            32768
-#define AM_BURTC_TICKS_PER_SECOND                 1024
-#define AM_MINIMUM_POWER_DOWN_TIME                64
+#define AM_BURTC_TICKS_PER_SECOND                 32768
+#define AM_MINIMUM_POWER_DOWN_TIME                2048
 
+#define MICROSECONDS_IN_SECOND                    1000000
 #define MILLISECONDS_IN_SECOND                    1000
 #define SECONDS_IN_MINUTE                         60
 #define MINUTES_IN_HOUR                           60
@@ -228,7 +229,7 @@ static void setupBackupRTC(bool useLFXO);
 static void setupBackupDomain(bool useLFXO);
 static void setupWatchdogTimer(void);
 static void handleTimeOverflow(void);
-static void setupOpAmp(AM_gainRange_t gainRain, AM_gainSetting_t gain);
+static void setupOpAmp(AM_gainRange_t gainRange, AM_gainSetting_t gain);
 static AM_hardwareVersion_t senseHardwareVersion(void);
 static void enablePrsTimer(uint32_t samplerate);
 static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
@@ -287,13 +288,13 @@ void AudioMoth_initialise() {
 
             CMU_OscillatorEnable(cmuOsc_LFXO, false, false);
 
-            GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, 0);
+            GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, false);
 
             AudioMoth_delay(100);  
 
             /* Enable LFXO sense */
 
-            GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, 1);
+            GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, true);
 
             AudioMoth_delay(10);  
 
@@ -303,7 +304,7 @@ void AudioMoth_initialise() {
 
             /* Disable LFXO sense */
 
-            GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModeDisabled, 0);
+            GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModeDisabled, false);
 
             /* Start the LFXO */
 
@@ -385,9 +386,9 @@ void AudioMoth_initialise() {
 
     /* Enable interrupt on USB switch position to wake from EM2 */
 
-    GPIO_PinModeSet(SWITCH_1_GPIOPORT, SWITCH_1_SENSE, gpioModeInput, 0);
+    GPIO_PinModeSet(SWITCH_1_GPIOPORT, SWITCH_1_SENSE, gpioModeInput, true);
 
-    GPIO_PinModeSet(SWITCH_2_GPIOPORT, SWITCH_2_SENSE, gpioModeInput, 0);
+    GPIO_PinModeSet(SWITCH_2_GPIOPORT, SWITCH_2_SENSE, gpioModeInput, true);
 
     GPIO_IntConfig(SWITCH_1_GPIOPORT, SWITCH_1_SENSE, true, true, true);
 
@@ -624,13 +625,13 @@ static void setupBackupRTC(bool useLFXO) {
 
     BURTC_Init_TypeDef burtcInit = BURTC_INIT_DEFAULT;
 
-    burtcInit.mode = burtcModeEM4;
-    burtcInit.clkSel = useLFXO ? burtcClkSelLFXO : burtcClkSelLFRCO;
-    burtcInit.clkDiv = burtcClkDiv_32;
-    burtcInit.timeStamp = false;
-    burtcInit.compare0Top = false;
     burtcInit.enable = false;
-    burtcInit.lowPowerMode = burtcLPDisable;
+
+    burtcInit.mode = burtcModeEM4;
+ 
+    burtcInit.clkSel = useLFXO ? burtcClkSelLFXO : burtcClkSelLFRCO;
+    
+    burtcInit.timeStamp = false;
 
     BURTC_Init(&burtcInit);
 
@@ -670,7 +671,7 @@ void AudioMoth_initialiseMicrophoneInterrupts(void) {
 
 }
 
-void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint16_t numberOfSamples) {
+void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint32_t numberOfSamples) {
 
     numberOfSamplesPerTransfer = numberOfSamples;
 
@@ -738,7 +739,17 @@ void AudioMoth_ignoreExternalMicrophone(bool state) {
 
 }
 
-bool AudioMoth_enableMicrophone(AM_gainRange_t gainRain, AM_gainSetting_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
+bool AudioMoth_isIgnoreExternalMicrophoneSupported() {
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion <= AM_VERSION_2) return false;
+
+    return true;
+
+}
+
+AM_externalMicrophone_t AudioMoth_enableMicrophone(AM_gainRange_t gainRange, AM_gainSetting_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
 
     /* Check hardware version */
 
@@ -746,75 +757,117 @@ bool AudioMoth_enableMicrophone(AM_gainRange_t gainRain, AM_gainSetting_t gain, 
 
     /* Check for external microphone */
 
-    bool externalMicrophone = false;
+    bool externalMicrophonePresent = false;
 
-    if (ignoreExternalMicrophone) {
+    if (hardwareVersion >= AM_VERSION_2 && hardwareVersion < AM_VERSION_4) {
 
-        if (hardwareVersion == AM_VERSION_2) {
+        GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeInput, true);
 
-            GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeInput, 0);
+        externalMicrophonePresent = GPIO_PinInGet(JCK_DETECT_GPIOPORT, JCK_DETECT) == 0;
+
+    }
+
+    if (hardwareVersion >= AM_VERSION_4) {
+
+        GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeInput, true);
+
+        externalMicrophonePresent = GPIO_PinInGet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT) == 0;
+
+    }
+
+    /* Disable external microphone sensing or enable interrupts as appropriate */
+
+    if (hardwareVersion == AM_VERSION_2) {
+
+        GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, true);
+
+    }
+
+    if (hardwareVersion == AM_VERSION_3) {
+
+        if (ignoreExternalMicrophone) {
+
+            GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, false);
+
+        } else {
 
             GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, true);
 
-            externalMicrophone = GPIO_PinInGet(JCK_DETECT_GPIOPORT, JCK_DETECT) == 0;
-
         }
 
-    } else {
+    }
 
-        if (hardwareVersion >= AM_VERSION_2 && hardwareVersion < AM_VERSION_4) {
+    if (hardwareVersion >= AM_VERSION_4) {
 
-            GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeInput, 0);
+        if (ignoreExternalMicrophone) {
 
-            GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, true);
+            GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeDisabled, false);
 
-            externalMicrophone = GPIO_PinInGet(JCK_DETECT_GPIOPORT, JCK_DETECT) == 0;
-
-        }
-
-        if (hardwareVersion >= AM_VERSION_4) {
-
-            GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeInput, 0);
+        } else {
 
             GPIO_IntConfig(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, true, true, true);
 
-            externalMicrophone = GPIO_PinInGet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT) == 0;
-
         }
 
     }
 
-    /* Enable microphone power */
+    /* Enable external and internal microphone power as appropriate */
 
-    if (externalMicrophone) {
+    if (hardwareVersion == AM_VERSION_2) {
 
-        if (hardwareVersion < AM_VERSION_4) {
+        if (externalMicrophonePresent) {
 
             GPIO_PinOutClear(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N);
-        
+
         } else {
-        
-            GPIO_PinOutClear(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N);
-        
+
+            GPIO_PinOutClear(VMIC_GPIOPORT, VMIC_ENABLE_N);
+
         }
-
-    } else {
-
-        if (hardwareVersion < AM_VERSION_4) GPIO_PinOutClear(VMIC_GPIOPORT, VMIC_ENABLE_N);
 
     }
 
-    /* Enable VREF power */
+    if (hardwareVersion == AM_VERSION_3) {
+
+        if (externalMicrophonePresent && ignoreExternalMicrophone == false) {
+
+            GPIO_PinOutClear(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N);
+
+        } else {
+
+            GPIO_PinOutClear(VMIC_GPIOPORT, VMIC_ENABLE_N);
+
+        }
+
+    }
+
+    if (hardwareVersion >= AM_VERSION_4) {
+
+        if (externalMicrophonePresent && ignoreExternalMicrophone == false) {
+
+            GPIO_PinOutClear(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N);
+
+        }
+
+    }
+
+    /* Enable VREF power if appropriate */
 
     if (hardwareVersion < AM_VERSION_4) GPIO_PinOutSet(VREF_GPIOPORT, VREF_ENABLE);
 
     /* Set up amplifier stage and the ADC */
 
-    setupOpAmp(gainRain, gain);
+    setupOpAmp(gainRange, gain);
 
     setupADC(clockDivider, acquisitionCycles, oversampleRate);
 
-    return externalMicrophone;
+    /* Return appropriate enum */
+
+    if (externalMicrophonePresent == false) return AM_EXTERNAL_NOT_PRESENT;
+
+    if (ignoreExternalMicrophone == false || hardwareVersion == AM_VERSION_2) return AM_EXTERNAL_PRESENT_AND_USED;
+
+    return AM_EXTERNAL_PRESENT_AND_IGNORED;
 
 }
 
@@ -848,7 +901,7 @@ void AudioMoth_disableMicrophone(void) {
 
         GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, false);
 
-        GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, 0);
+        GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, false);
 
         GPIO_PinOutSet(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N);
 
@@ -858,7 +911,7 @@ void AudioMoth_disableMicrophone(void) {
 
         GPIO_IntConfig(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, true, true, false);
 
-        GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeDisabled, 0);
+        GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeDisabled, false);
 
         GPIO_PinOutSet(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N);
 
@@ -1106,13 +1159,29 @@ static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t
 
 /* Function to implement a sleeping delay */
 
-void AudioMoth_delay(uint32_t milliseconds) {
+void AudioMoth_delayMicroseconds(uint32_t microseconds) {
 
     /* Ensure the delay period wont cause the counter to overflow and calculate clock ticks to wait */
 
-    if (milliseconds == 0)  return;
+    if (microseconds == 0) return;
 
-    if (milliseconds > MILLISECONDS_IN_SECOND) milliseconds = MILLISECONDS_IN_SECOND;
+    if (microseconds > MICROSECONDS_IN_SECOND) microseconds = MICROSECONDS_IN_SECOND;
+
+    /* Calculate the prescaler */
+
+    u_int32_t prescale = timerPrescale1;
+
+    uint64_t clockTicksToWait = ROUNDED_DIV((uint64_t)CMU_ClockFreqGet(cmuClock_HF) * (uint64_t)microseconds, MICROSECONDS_IN_SECOND);
+
+    while (clockTicksToWait > UINT16_MAX) {
+
+        clockTicksToWait /= 2;
+
+        prescale += 1;
+
+    }
+    
+    if (clockTicksToWait == 0) return;
 
     /* Enable clock for TIMER1 */
 
@@ -1122,7 +1191,7 @@ void AudioMoth_delay(uint32_t milliseconds) {
 
     TIMER_Init_TypeDef delayInit = TIMER_INIT_DEFAULT;
 
-    delayInit.prescale = timerPrescale1024;
+    delayInit.prescale = prescale;
 
     delayInit.enable = false;
 
@@ -1140,9 +1209,7 @@ void AudioMoth_delay(uint32_t milliseconds) {
 
     delayTimerRunning = true;
 
-    uint32_t clockTicksToWait = ROUNDED_DIV((CMU_ClockFreqGet(cmuClock_HF) >> timerPrescale1024) * milliseconds, MILLISECONDS_IN_SECOND);
-
-    TIMER_TopSet(TIMER1, clockTicksToWait);
+    TIMER_TopSet(TIMER1, (uint32_t)clockTicksToWait);
 
     TIMER_CounterSet(TIMER1, 0);
 
@@ -1165,6 +1232,12 @@ void AudioMoth_delay(uint32_t milliseconds) {
     /* Disable the clock for TIMER1 */
 
     CMU_ClockEnable(cmuClock_TIMER1, false);
+
+}
+
+void AudioMoth_delay(uint32_t milliseconds) {
+
+    AudioMoth_delayMicroseconds(milliseconds * MICROSECONDS_IN_SECOND / MILLISECONDS_IN_SECOND);
 
 }
 
@@ -1407,6 +1480,10 @@ static inline uint16_t updateCRC(uint16_t crc, uint32_t incr) {
 SL_RAMFUNC_DEFINITION_BEGIN
 static void __attribute__ ((noinline)) clearUserDataPageInFlash() {
 
+    /* Disable interrupts */
+
+    __disable_irq();
+
     /* Unlock the internal flash for erasing and writing */
 
     MSC->LOCK = MSC_UNLOCK_CODE;
@@ -1425,9 +1502,9 @@ static void __attribute__ ((noinline)) clearUserDataPageInFlash() {
 
     /* Write the internal flash page */
 
-    for (uint32_t j = 0; j < AM_FIRMWARE_PAGE_SIZE; j += 4) {
+    for (uint32_t i = 0; i < AM_FIRMWARE_PAGE_SIZE; i += 4) {
 
-        MSC->WDATA = 0x00;
+        MSC->WDATA = 0x00000000;
 
         MSC->WRITECMD = MSC_WRITECMD_WRITEONCE;
 
@@ -1441,6 +1518,10 @@ static void __attribute__ ((noinline)) clearUserDataPageInFlash() {
 
     MSC->LOCK = 0;
 
+    /* Enable interrupts */
+
+    __enable_irq();
+
 }
 SL_RAMFUNC_DEFINITION_END
 
@@ -1448,6 +1529,10 @@ SL_RAMFUNC_DEFINITION_END
 
 SL_RAMFUNC_DEFINITION_BEGIN
 static void __attribute__ ((noinline)) writeFirmwareToInternalFlash() {
+
+    /* Disable interrupts */
+
+    __disable_irq();
 
     /* Unlock the internal flash for erasing and writing */
 
@@ -1488,6 +1573,10 @@ static void __attribute__ ((noinline)) writeFirmwareToInternalFlash() {
     MSC->WRITECTRL &= ~MSC_WRITECTRL_WREN;
 
     MSC->LOCK = 0;
+
+    /* Enable interrupts */
+
+    __enable_irq();
 
     /* Reset to start the new firmware */
 
@@ -1819,7 +1908,7 @@ void AudioMoth_handleUSB(void) {
 
     /* Configure data input pin */
 
-    GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeInputPull, 0);
+    GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeInputPull, false);
 
     /* Enable RTC for watch dog and BURTC overflow */
 
@@ -1852,16 +1941,16 @@ void AudioMoth_handleUSB(void) {
         if (shouldCalculateCRC) {
 
             currentCRC = 0;
-            
+
             for (uint32_t i = 0; i < AM_FIRMWARE_TOTAL_SIZE; i += 1) {
 
-                uint32_t byte = firmwareStartAddress[i];
-
-                for (uint32_t j = 0x80; j > 0; j >>= 1) currentCRC = updateCRC(currentCRC, byte & j);
+                currentCRC  = (currentCRC >> 8) | (currentCRC << 8);
+                currentCRC ^= firmwareStartAddress[i];
+                currentCRC ^= (currentCRC & 0xFF) >> 4;
+                currentCRC ^= currentCRC << 12;
+                currentCRC ^= (currentCRC & 0xFF) << 5;
 
             }
-
-            for (uint32_t j = 0; j < 16; j += 1) currentCRC = updateCRC(currentCRC, 0);
 
             completedCalculateCRC = true;
 
@@ -1903,9 +1992,29 @@ void AudioMoth_handleUSB(void) {
 
     AudioMoth_stopRealTimeClock();
 
+    /* Disable interrupts */    
+
+    NVIC_DisableIRQ(GPIO_EVEN_IRQn);
+
+    NVIC_DisableIRQ(GPIO_ODD_IRQn);
+
+    NVIC_DisableIRQ(UART1_RX_IRQn);
+
+    NVIC_DisableIRQ(UART1_TX_IRQn);
+
+    NVIC_DisableIRQ(TIMER0_IRQn);
+
+    NVIC_DisableIRQ(TIMER1_IRQn);
+
+    NVIC_DisableIRQ(TIMER2_IRQn);
+
+    NVIC_DisableIRQ(TIMER3_IRQn);
+
+    NVIC_DisableIRQ(ADC0_IRQn);
+
     /* Disable the data input pin */
 
-    GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeDisabled, 0);   
+    GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeDisabled, false);   
 
     /* Jump directly to the serial bootloader */
 
@@ -1919,9 +2028,11 @@ void AudioMoth_handleUSB(void) {
 
         GPIO->ROUTE &= ~GPIO_ROUTE_SWCLKPEN;
 
-        GPIO_PinModeSet(gpioPortF, 0, gpioModePushPull, 1);
+        GPIO_PinModeSet(gpioPortF, 0, gpioModePushPull, true);
 
         /* Jump to bootloader */
+
+        SCB->VTOR = 0x00000000;
 
         __asm (
 
@@ -1929,16 +2040,9 @@ void AudioMoth_handleUSB(void) {
 
             ".equ BOOTLOADER_ADDRESS, 0x00000000\n\t"
 
-            ".equ SCB_VTOR, (0xE000E000 + 0x0D00 + 0x008)\n\t"
-
             /* Load the bootloader address */
 
             "ldr r0, =BOOTLOADER_ADDRESS\n\t"
-
-            /* Set the vector table */
-
-            "ldr r1, =SCB_VTOR\n\t"
-            "str r0, [r1]\n\t"
 
             /* Set the stack pointer */
 
@@ -2404,27 +2508,63 @@ uint32_t AudioMoth_retreiveFromBackupDomain(uint32_t number) {
 SL_RAMFUNC_DEFINITION_BEGIN
 bool AudioMoth_writeToFlashUserDataPage(uint8_t *data, uint32_t length) {
 
-    CORE_DECLARE_IRQ_STATE;
+    /* Disable interrupts */
 
-    CORE_ENTER_ATOMIC();
+    __disable_irq();
+
+    /* Unlock the internal flash for erasing and writing */
 
     MSC->LOCK = MSC_UNLOCK_CODE;
 
-    MSC_Init();
+    MSC->WRITECTRL |= MSC_WRITECTRL_WREN;
 
-    MSC_Status_TypeDef status = MSC_ErasePage((uint32_t*)AM_FLASH_USER_DATA_ADDRESS);
+    /* Erase the internal flash page */
 
-    if (status == mscReturnOk) {
+    MSC->ADDRB = AM_FLASH_USER_DATA_ADDRESS;
 
-        status = MSC_WriteWord((uint32_t*)AM_FLASH_USER_DATA_ADDRESS, data, length);
+    MSC->WRITECMD = MSC_WRITECMD_LADDRIM;
+
+    MSC->WRITECMD = MSC_WRITECMD_ERASEPAGE;
+
+    while (MSC->STATUS & MSC_STATUS_BUSY);
+
+    /* Write the internal flash page */
+
+    for (uint32_t i = 0; i < length; i += 4) {
+
+        MSC->WDATA = *(uint32_t*)(data + i);
+
+        MSC->WRITECMD = MSC_WRITECMD_WRITEONCE;
+
+        while (MSC->STATUS & MSC_STATUS_BUSY);
 
     }
 
+    /* Lock the internal flash */
+
+    MSC->WRITECTRL &= ~MSC_WRITECTRL_WREN;
+
     MSC->LOCK = 0;
 
-    CORE_EXIT_ATOMIC();
+    /* Check contents */
 
-    return status == mscReturnOk;
+    bool success = true;
+    
+    uint8_t *address = (uint8_t*)AM_FLASH_USER_DATA_ADDRESS;
+
+    for (uint32_t i = 0; success && i < length; i += 1) {
+
+        if (*(data + i) != *(address + i)) success = false;
+
+    }
+
+    /* Enable interrupts */
+
+    __enable_irq();
+
+    /* Return status */
+
+    return success;
 
 }
 SL_RAMFUNC_DEFINITION_END
@@ -2453,7 +2593,7 @@ static void setTime(uint32_t time, uint32_t milliseconds) {
 
 }
 
-static void getTime(uint32_t *time, uint32_t *milliseconds) {
+static void getTimeBase(uint32_t *time, uint32_t *remainderTicks) {
 
     uint64_t offset = (uint64_t)BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_HIGH) << 32;
 
@@ -2467,11 +2607,35 @@ static void getTime(uint32_t *time, uint32_t *milliseconds) {
 
     }
 
+    *remainderTicks = currentCounter % AM_BURTC_TICKS_PER_SECOND;
+
+}
+
+static void getTime(uint32_t *time, uint32_t *milliseconds) {
+
+    uint32_t remainderTicks;
+
+    getTimeBase(time, &remainderTicks);
+
     if (milliseconds != NULL) {
 
-        uint32_t ticks = currentCounter % AM_BURTC_TICKS_PER_SECOND;
+        *milliseconds = (MILLISECONDS_IN_SECOND * remainderTicks) / AM_BURTC_TICKS_PER_SECOND;
 
-        *milliseconds = ROUNDED_DIV(MILLISECONDS_IN_SECOND * ticks, AM_BURTC_TICKS_PER_SECOND);
+    }
+
+}
+
+static void getTimeMicroseconds(uint32_t *time, uint32_t *microseconds) {
+
+    uint32_t remainderTicks;
+
+    getTimeBase(time, &remainderTicks);
+
+    if (microseconds != NULL) {
+
+        uint64_t microsecondRemainer = (MICROSECONDS_IN_SECOND * (uint64_t)remainderTicks) / AM_BURTC_TICKS_PER_SECOND;
+
+        *microseconds = (uint32_t)microsecondRemainer;
 
     }
 
@@ -2510,6 +2674,22 @@ void AudioMoth_getTime(uint32_t *time, uint32_t *milliseconds) {
         handleTimeOverflow();
 
         getTime(time, milliseconds);
+
+        BURTC_IntClear(BURTC_IF_OF);
+
+    }
+
+}
+
+void AudioMoth_getTimeMicroseconds(uint32_t *time, uint32_t *microseconds) {
+
+    getTimeMicroseconds(time, microseconds);
+
+    if (BURTC_IntGet() & BURTC_IF_OF) {
+
+        handleTimeOverflow();
+
+        getTimeMicroseconds(time, microseconds);
 
         BURTC_IntClear(BURTC_IF_OF);
 
@@ -2750,16 +2930,26 @@ bool AudioMoth_enableFileSystem(AM_sdCardSpeed_t speed) {
     DSTATUS resCard = disk_initialize(0);
 
     if (resCard == STA_NOINIT || resCard == STA_NODISK || resCard == STA_PROTECT) {
+
+        MICROSD_PowerOff();
+
         return false;
+
     }
 
     /* Initialise file system */
 
     if (f_mount(&fatfs, "", 1) != FR_OK) {
+
+        MICROSD_PowerOff();
+
         return false;
+
     }
 
     /* Return success */
+
+    MICROSD_PowerOff();
 
     return true;
 
@@ -2777,6 +2967,10 @@ void AudioMoth_disableFileSystem(void) {
 
     MICROSD_Deinit();
 
+    /* Pause before power off */
+
+    AudioMoth_delay(10);
+
     /* Turn SD card off*/
 
     GPIO_PinOutSet(SDEN_GPIOPORT, SD_ENABLE_N);
@@ -2785,13 +2979,27 @@ void AudioMoth_disableFileSystem(void) {
 
 bool AudioMoth_doesFileExist(char *filename){
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_stat(filename, NULL);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
+
+}
+
+void AudioMoth_pauseSDCardClock(void) {
+
+    MICROSD_PowerOff();
+
+}
+
+void AudioMoth_restartSDCardClock(void) {
+
+    MICROSD_PowerOn();
 
 }
 
@@ -2799,11 +3007,13 @@ bool AudioMoth_openFile(char *filename) {
 
     /* Open a file for writing. Overwrite existing file with the same name */
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_open(&file, filename,  FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
 
@@ -2813,18 +3023,31 @@ bool AudioMoth_appendFile(char *filename) {
 
     /* Open the file for writing. Append existing file with the same name */
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_open(&file, filename,  FA_OPEN_ALWAYS | FA_WRITE | FA_READ);
 
     if (res != FR_OK) {
+
+        MICROSD_PowerOff();
+
         return false;
+
     }
 
     res = f_lseek(&file, f_size(&file));
 
     if (res != FR_OK) {
+
         f_close(&file);
+
+        MICROSD_PowerOff();
+
         return false;
+
     }
+
+    MICROSD_PowerOff();
 
     return true;
 
@@ -2832,11 +3055,13 @@ bool AudioMoth_appendFile(char *filename) {
 
 bool AudioMoth_openFileToRead(char *filename) {
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_open(&file, filename,  FA_READ);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
 
@@ -2844,11 +3069,13 @@ bool AudioMoth_openFileToRead(char *filename) {
 
 bool AudioMoth_readFile(char *buffer, uint32_t bufferSize) {
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_read(&file, buffer, bufferSize, &bw);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
 
@@ -2856,23 +3083,27 @@ bool AudioMoth_readFile(char *buffer, uint32_t bufferSize) {
 
 bool AudioMoth_seekInFile(uint32_t position) {
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_lseek(&file, position);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
 
 }
 
-bool AudioMoth_writeToFile(void *bytes, uint16_t bytesToWrite) {
+bool AudioMoth_writeToFile(void *bytes, uint32_t bytesToWrite) {
+
+    MICROSD_PowerOn();
 
     FRESULT res = f_write(&file, bytes, bytesToWrite, &bw);
 
-    if ((res != FR_OK) || (bytesToWrite != bw)) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if ((res != FR_OK) || (bytesToWrite != bw)) return false;
 
     return true;
 
@@ -2880,11 +3111,13 @@ bool AudioMoth_writeToFile(void *bytes, uint16_t bytesToWrite) {
 
 bool AudioMoth_renameFile(char *originalFilename, char *newFilename) {
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_rename(originalFilename, newFilename);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
 
@@ -2892,11 +3125,13 @@ bool AudioMoth_renameFile(char *originalFilename, char *newFilename) {
 
 bool AudioMoth_syncFile(void) {
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_sync(&file);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
 
@@ -2904,11 +3139,13 @@ bool AudioMoth_syncFile(void) {
 
 bool AudioMoth_closeFile(void) {
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_close(&file);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
 
@@ -2916,11 +3153,13 @@ bool AudioMoth_closeFile(void) {
 
 bool AudioMoth_doesDirectoryExist(char *folderName){
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_stat(folderName, NULL);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
 
@@ -2928,11 +3167,13 @@ bool AudioMoth_doesDirectoryExist(char *folderName){
 
 bool AudioMoth_makeDirectory(char *folderName) {
 
+    MICROSD_PowerOn();
+
     FRESULT res = f_mkdir(folderName);
 
-    if (res != FR_OK) {
-        return false;
-    }
+    MICROSD_PowerOff();
+
+    if (res != FR_OK) return false;
 
     return true;
 
@@ -2948,48 +3189,48 @@ static void enableEBI(void) {
 
     /* Enable EBI AD0..07 data pins*/
 
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD00, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD01, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD02, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD03, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD04, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD05, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD06, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD07, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD00, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD01, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD02, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD03, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD04, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD05, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD06, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD07, gpioModePushPull, false);
 
     /* Enable EBI AD08..15 address pins*/
 
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD10, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD11, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD12, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD13, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD14, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD15, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD10, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD11, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD12, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD13, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD14, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD15, gpioModePushPull, false);
 
     /* Enable EBI A16..24 extension address pins*/
 
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A08, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A09, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A10, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A11, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A12, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A13, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A14, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A15, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A16, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A17, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A08, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A09, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A10, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A11, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A12, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A13, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A14, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A15, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A16, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A17, gpioModePushPull, false);
 
     /* Enable EBI CS0-CS1 */
 
-    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModePushPull, false);
 
     /* Enable EBI WEN/OEN */
 
-    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_OE, gpioModePushPull, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_WE, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_OE, gpioModePushPull, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_WE, gpioModePushPull, false);
 
     /* Configure EBI controller, changing default values */
 
@@ -3032,46 +3273,46 @@ static void disableEBI(void) {
 
     /* Disable EBI AD0..07 data pins*/
 
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD00, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD01, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD02, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD03, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD04, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD05, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD06, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD07, gpioModeDisabled, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD00, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD01, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD02, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD03, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD04, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD05, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD06, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD07, gpioModeDisabled, false);
 
     /* Disable EBI AD08..15 address pins*/
 
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD10, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD11, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD12, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD13, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD14, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD15, gpioModeDisabled, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD10, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD11, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD12, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD13, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD14, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD15, gpioModeDisabled, false);
 
     /* Disable EBI A16..24 extension address pins*/
 
-    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A16, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A17, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A18, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A19, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A21, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A22, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A23, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A24, gpioModeDisabled, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A16, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A17, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A18, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A19, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A21, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A22, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A23, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A24, gpioModeDisabled, false);
 
     /* Disable EBI CS0-CS1 */
 
-    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModeDisabled, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModeDisabled, false);
 
     /* Disable EBI WEN/OEN */
 
-    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_OE, gpioModeDisabled, 0);
-    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_WE, gpioModeDisabled, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_OE, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_WE, gpioModeDisabled, false);
 
     /* Turn off EBI clock */
 
@@ -3087,138 +3328,138 @@ static void setupGPIO(void) {
 
 	/* GPIO A */
 
-	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD10, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD11, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD12, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD13, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD14, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD15, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortA, 7, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortA, 8, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortA, 9, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortA, 10, gpioModeDisabled, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD10, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD11, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD12, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD13, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD14, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD15, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortA, 7, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortA, 8, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortA, 9, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortA, 10, gpioModeDisabled, false);
 
     if (hardwareVersion >= AM_VERSION_4) {
-	    GPIO_PinModeSet(VREF_GPIOPORT, VREF_ENABLE, gpioModeDisabled, 0);
+        GPIO_PinModeSet(VREF_GPIOPORT, VREF_ENABLE, gpioModeDisabled, false);
     } else {
-        GPIO_PinModeSet(VREF_GPIOPORT, VREF_ENABLE, gpioModePushPull, 0);
+        GPIO_PinModeSet(VREF_GPIOPORT, VREF_ENABLE, gpioModePushPull, false);
     }
-	
+
     GPIO_PinModeSet(gpioPortA, 12, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortA, 13, gpioModeDisabled, 0);
-	GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModeDisabled, 0);
+    GPIO_PinModeSet(gpioPortA, 13, gpioModeDisabled, 0);
+    GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModeDisabled, false);
 
-	/* GPIO B */
+    /* GPIO B */
 
-	GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A16, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A17, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortB, 2, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortB, 3, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortB, 4, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortB, 5, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortB, 6, gpioModeDisabled, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A16, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A17, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortB, 2, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortB, 3, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortB, 4, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortB, 5, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortB, 6, gpioModeDisabled, false);
 
     if (hardwareVersion >= AM_VERSION_4) {
-        GPIO_PinModeSet(gpioPortB, 7, gpioModeDisabled, 0);
-        GPIO_PinModeSet(gpioPortB, 8, gpioModeDisabled, 0);
+        GPIO_PinModeSet(gpioPortB, 7, gpioModeDisabled, false);
+        GPIO_PinModeSet(gpioPortB, 8, gpioModeDisabled, false);
     }
 
-	GPIO_PinModeSet(gpioPortB, 9, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortB, 10, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortB, 11, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortB, 12, gpioModeDisabled, 0);
+    GPIO_PinModeSet(gpioPortB, 9, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortB, 10, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortB, 11, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortB, 12, gpioModeDisabled, false);
 
-	/* GPIO C */
+    /* GPIO C */
 
-	GPIO_PinModeSet(gpioPortC, 0, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortC, 1, gpioModeDisabled, 0);
+    GPIO_PinModeSet(gpioPortC, 0, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortC, 1, gpioModeDisabled, false);
 
     if (hardwareVersion >= AM_VERSION_4) {
-	    GPIO_PinModeSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE, gpioModeDisabled, 0);
+        GPIO_PinModeSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE, gpioModeDisabled, false);
     } else {
-        GPIO_PinModeSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE, gpioModePushPull, 0);
+        GPIO_PinModeSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE, gpioModePushPull, false);
     }
 
     if (hardwareVersion < AM_VERSION_4) {
-        GPIO_PinModeSet(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N, gpioModeDisabled, 0);
+        GPIO_PinModeSet(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N, gpioModeDisabled, false);
     } else {
-        GPIO_PinModeSet(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N,  gpioModePushPull, 1);
+        GPIO_PinModeSet(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N,  gpioModePushPull, true);
     }
 
-	GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A15, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A09, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A10, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortC, 11, gpioModeDisabled, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A15, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A09, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A10, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortC, 11, gpioModeDisabled, false);
 
-	/* GPIO D */
+    /* GPIO D */
 
-    GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortD, 1, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortD, 2, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortD, 3, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortD, 4, gpioModeDisabled, 0);
-	GPIO_PinModeSet(VERSION_CONTROL_GPIOPORT, VERSION_CONTROL, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModeDisabled, 0);
+    GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortD, 1, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortD, 2, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortD, 3, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortD, 4, gpioModeDisabled, false);
+    GPIO_PinModeSet(VERSION_CONTROL_GPIOPORT, VERSION_CONTROL, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModeDisabled, false);
 
     if (hardwareVersion >= AM_VERSION_4) {
-	    GPIO_PinModeSet(SRAMEN_GPIOPORT, SRAM_ENABLE_N, gpioModeDisabled, 0);
+        GPIO_PinModeSet(SRAMEN_GPIOPORT, SRAM_ENABLE_N, gpioModeDisabled, false);
     } else {
-        GPIO_PinModeSet(SRAMEN_GPIOPORT, SRAM_ENABLE_N, gpioModePushPull, 1);
+        GPIO_PinModeSet(SRAMEN_GPIOPORT, SRAM_ENABLE_N, gpioModePushPull, true);
     }
 
     if (hardwareVersion >= AM_VERSION_4) {
-        GPIO_PinModeSet(SDEN_GPIOPORT, SD_ENABLE_N, gpioModeDisabled, 0);
+        GPIO_PinModeSet(SDEN_GPIOPORT, SD_ENABLE_N, gpioModeDisabled, false);
     } else {
-	    GPIO_PinModeSet(SDEN_GPIOPORT, SD_ENABLE_N, gpioModePushPull, 1);
+        GPIO_PinModeSet(SDEN_GPIOPORT, SD_ENABLE_N, gpioModePushPull, true);
     }
 
-	/* GPIO E */
+    /* GPIO E */
 
      if (hardwareVersion >= AM_VERSION_4) {
-	   GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_ENABLE_N, gpioModeDisabled, 0);
+        GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_ENABLE_N, gpioModeDisabled, false);
     } else {
-        GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_ENABLE_N, gpioModePushPull, 1);
+        GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_ENABLE_N, gpioModePushPull, true);
     }
 
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A08, gpioModeDisabled, 0);
+	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A08, gpioModeDisabled, false);
 
     if (hardwareVersion < AM_VERSION_2 || hardwareVersion >= AM_VERSION_4) {
-        GPIO_PinModeSet(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N, gpioModeDisabled, 0);
+        GPIO_PinModeSet(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N, gpioModeDisabled, false);
     } else {
-        GPIO_PinModeSet(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N, gpioModePushPull, 1);
+        GPIO_PinModeSet(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N, gpioModePushPull, true);
     }
 
-	GPIO_PinModeSet(gpioPortE, 3, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A11, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A12, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A13, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A14, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD00, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD01, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD02, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD03, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD04, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD05, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD06, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD07, gpioModeDisabled, 0);
+    GPIO_PinModeSet(gpioPortE, 3, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A11, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A12, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A13, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A14, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD00, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD01, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD02, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD03, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD04, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD05, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD06, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD07, gpioModeDisabled, false);
 
-	/* GPIO F */
+    /* GPIO F */
 
-	GPIO_PinModeSet(gpioPortF, 3, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortF, 4, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortF, 5, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortF, 6, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortF, 7, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_WE, gpioModeDisabled, 0);
-	GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_OE, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortF, 12, gpioModeDisabled, 0);
+    GPIO_PinModeSet(gpioPortF, 3, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortF, 4, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortF, 5, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortF, 6, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortF, 7, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_WE, gpioModeDisabled, false);
+    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_OE, gpioModeDisabled, false);
+    GPIO_PinModeSet(gpioPortF, 12, gpioModeDisabled, false);
 
     /* Enable GPIO state retention in EM4 */
 
-	GPIO->CTRL = GPIO_CTRL_EM4RET;
+    GPIO->CTRL = GPIO_CTRL_EM4RET;
 
 }
 

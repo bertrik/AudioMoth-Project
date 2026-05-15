@@ -44,6 +44,8 @@ typedef enum {AM_SWITCH_CUSTOM, AM_SWITCH_DEFAULT, AM_SWITCH_USB, AM_SWITCH_NONE
 
 typedef enum {AM_GAIN_LOW, AM_GAIN_LOW_MEDIUM, AM_GAIN_MEDIUM, AM_GAIN_MEDIUM_HIGH, AM_GAIN_HIGH} AM_gainSetting_t;
 
+typedef enum {AM_EXTERNAL_NOT_PRESENT, AM_EXTERNAL_PRESENT_AND_USED, AM_EXTERNAL_PRESENT_AND_IGNORED} AM_externalMicrophone_t;
+
 typedef enum {AM_HFRCO_1MHZ, AM_HFRCO_7MHZ, AM_HFRCO_11MHZ, AM_HFRCO_14MHZ, AM_HFRCO_21MHZ, AM_HFRCO_28MHZ} AM_clockFrequency_t;
 
 typedef enum {AM_BATTERY_LOW, AM_BATTERY_3V6, AM_BATTERY_3V7, AM_BATTERY_3V8, AM_BATTERY_3V9, AM_BATTERY_4V0, AM_BATTERY_4V1, AM_BATTERY_4V2, \
@@ -106,10 +108,12 @@ void AudioMoth_disableExternalSRAM(void);
 void AudioMoth_startMicrophoneSamples(uint32_t sampleRate);
 
 void AudioMoth_initialiseMicrophoneInterrupts(void);
-void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint16_t numberOfSamples);
+void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint32_t numberOfSamples);
 
 void AudioMoth_ignoreExternalMicrophone(bool state);
-bool AudioMoth_enableMicrophone(AM_gainRange_t gainRange, AM_gainSetting_t gainSetting, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
+bool AudioMoth_isIgnoreExternalMicrophoneSupported(void);
+
+AM_externalMicrophone_t AudioMoth_enableMicrophone(AM_gainRange_t gainRange, AM_gainSetting_t gainSetting, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 void AudioMoth_disableMicrophone(void);
 
 /* USB */
@@ -131,6 +135,7 @@ bool AudioMoth_writeToFlashUserDataPage(uint8_t *data, uint32_t length);
 bool AudioMoth_hasTimeBeenSet(void);
 void AudioMoth_setTime(uint32_t time, uint32_t milliseconds);
 void AudioMoth_getTime(uint32_t *time, uint32_t *milliseconds);
+void AudioMoth_getTimeMicroseconds(uint32_t *time, uint32_t *microseconds);
 
 /* Watch dog timer */
 
@@ -186,6 +191,7 @@ AM_switchPosition_t AudioMoth_getSwitchPosition(void);
 /* Busy delay */
 
 void AudioMoth_delay(uint32_t milliseconds);
+void AudioMoth_delayMicroseconds(uint32_t microseconds);
 
 /* Sleep and power down */
 
@@ -206,6 +212,9 @@ void AudioMoth_setGreenLED(bool state);
 bool AudioMoth_enableFileSystem(AM_sdCardSpeed_t speed);
 void AudioMoth_disableFileSystem(void);
 
+void AudioMoth_pauseSDCardClock(void);
+void AudioMoth_restartSDCardClock(void);
+
 bool AudioMoth_doesFileExist(char *filename);
 
 bool AudioMoth_openFile(char *filename);
@@ -214,7 +223,7 @@ bool AudioMoth_readFile(char *buffer, uint32_t bufferSize);
 bool AudioMoth_appendFile(char *filename);
 
 bool AudioMoth_seekInFile(uint32_t position);
-bool AudioMoth_writeToFile(void *bytes, uint16_t bytesToWrite);
+bool AudioMoth_writeToFile(void *bytes, uint32_t bytesToWrite);
 
 bool AudioMoth_renameFile(char *originalFilename, char *newFilename);
 
