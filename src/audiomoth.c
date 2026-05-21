@@ -813,6 +813,12 @@ AM_externalMicrophone_t AudioMoth_enableMicrophone(AM_gainRange_t gainRange, AM_
 
     /* Enable external and internal microphone power as appropriate */
 
+	if (hardwareVersion == AM_VERSION_1) {
+
+        GPIO_PinOutClear(VMIC_GPIOPORT, VMIC_ENABLE_N);
+
+    }
+	
     if (hardwareVersion == AM_VERSION_2) {
 
         if (externalMicrophonePresent) {
